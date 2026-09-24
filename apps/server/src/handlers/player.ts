@@ -1,5 +1,5 @@
 import type { Server, Socket } from "socket.io";
-import { EV, JoinSchema, RejoinSchema } from "@roomrush/shared";
+import { EV, JoinSchema, PlayerInputSchema, RejoinSchema } from "@roomrush/shared";
 import type { RoomManager } from "../rooms.js";
 
 export function registerPlayerHandlers(
@@ -54,6 +54,20 @@ export function registerPlayerHandlers(
         team: rejoined.player.team,
         number: rejoined.player.number,
       });
+  });
+
+  // ── player:input ─────────────────────────────────────────────────────────
+  socket.on(EV.PLAYER_INPUT, (payload) => {
+    const result = PlayerInputSchema.safeParse(payload);
+    if (!result.success) return;
+    const room = rooms.getRoomByPlayerSocket(socket.id);
+    if (!room || !room.hostSocketId) return;
+    const player = [...room.players.values()].find((p) => p.socketId === socket.id);
+    if (!player) return;
+    io.to(room.hostSocketId).emit(EV.PLAYER_INPUT, {
+      playerId: player.id,
+      ...result.data,
+    });
   });
 
   // ── disconnect ───────────────────────────────────────────────────────────
