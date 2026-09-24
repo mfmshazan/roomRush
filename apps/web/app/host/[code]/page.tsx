@@ -68,14 +68,14 @@ export default function HostPage() {
     const now = performance.now();
     const state = initMatch(room.players, now);
 
-    // Record real player IDs so keyboard input remaps to them
     kbPlayerIdsRef.current = [
       state.players[0]?.id ?? null,
       state.players[1]?.id ?? null,
     ];
     phoneInputRef.current.clear();
-
     matchStateRef.current = state;
+
+    const socket = getSocket();
 
     const stop = startLoop(
       canvas,
@@ -83,13 +83,32 @@ export default function HostPage() {
       getInput,
       (finalS) => {
         setFinalState({ ...finalS });
-        // Notify server match ended (stub — full relay in M3)
-        getSocket().emit(EV.HOST_PLAY_AGAIN, {});
+        socket.emit(EV.HOST_MATCH_STATUS, {
+          phase: "FULL_TIME",
+          score: finalS.score,
+          timeLeftMs: 0,
+        });
       },
       durationSec * 1000,
     );
 
-    return stop;
+    // Broadcast live score + timer to phones every second
+    const statusInterval = setInterval(() => {
+      const s = matchStateRef.current;
+      if (!s || s.phase === "FULL_TIME") return;
+      const lastGoal = s.goals[s.goals.length - 1];
+      socket.emit(EV.HOST_MATCH_STATUS, {
+        phase: s.phase,
+        score: s.score,
+        timeLeftMs: s.timeLeftMs,
+        ...(lastGoal ? { lastGoal: { team: lastGoal.team, scorerName: lastGoal.scorerName, ownGoal: lastGoal.ownGoal } } : {}),
+      });
+    }, 1000);
+
+    return () => {
+      stop();
+      clearInterval(statusInterval);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.phase]);
 
@@ -114,6 +133,7 @@ export default function HostPage() {
         state={finalState}
         onPlayAgain={() => {
           setFinalState(null);
+          matchStateRef.current = null;
           getSocket().emit(EV.HOST_PLAY_AGAIN, {});
         }}
       />
