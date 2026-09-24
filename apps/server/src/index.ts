@@ -8,17 +8,20 @@ import { registerHostHandlers } from "./handlers/host.js";
 import { registerPlayerHandlers } from "./handlers/player.js";
 
 const PORT = Number(process.env["PORT"] ?? 3001);
-const CLIENT_ORIGIN = process.env["CLIENT_ORIGIN"] ?? "http://localhost:3000";
+// Comma-separated list of allowed origins — supports both localhost and LAN IP
+const CLIENT_ORIGINS = (process.env["CLIENT_ORIGIN"] ?? "http://localhost:3000")
+  .split(",")
+  .map((s) => s.trim());
 
 const app = express();
-app.use(cors({ origin: CLIENT_ORIGIN }));
+app.use(cors({ origin: CLIENT_ORIGINS }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, version: PROTOCOL_VERSION });
 });
 
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: CLIENT_ORIGIN } });
+const io = new Server(httpServer, { cors: { origin: CLIENT_ORIGINS } });
 
 const rooms = new RoomManager();
 
