@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSocket } from "../../../lib/socket";
 import { EV } from "@roomrush/shared";
-import type { RoomState, Team } from "@roomrush/shared";
+import type { MatchStatus, RoomState, Team } from "@roomrush/shared";
 
 const TEAM_BG = { RED: "#D7263D", BLUE: "#1B66D1" } as const;
 
@@ -22,6 +22,7 @@ export default function PhoneController() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [me, setMe] = useState<Me | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
+  const [matchStatus, setMatchStatus] = useState<MatchStatus | null>(null);
   const [name, setName] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
@@ -48,6 +49,11 @@ export default function PhoneController() {
       setPhase(reason === "KICKED" ? "kicked" : "host_gone");
     });
 
+    socket.on(EV.MATCH_STATUS, (status: MatchStatus) => {
+      setMatchStatus(status);
+      if (status.phase === "FULL_TIME") setPhase("lobby");
+    });
+
     if (storedToken && storedPlayerId) {
       socket.emit(
         EV.PLAYER_REJOIN,
@@ -70,6 +76,7 @@ export default function PhoneController() {
     return () => {
       socket.off(EV.ROOM_STATE);
       socket.off(EV.ROOM_CLOSED);
+      socket.off(EV.MATCH_STATUS);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
@@ -157,7 +164,7 @@ export default function PhoneController() {
   }
 
   if (phase === "match" && me) {
-    return <Joystick me={me} />;
+    return <Joystick me={me} matchStatus={matchStatus} />;
   }
 
   // ── Lobby view ────────────────────────────────────────────────────────────
@@ -174,7 +181,20 @@ export default function PhoneController() {
       <div className="flex flex-col items-center gap-3 text-center">
         <p className="text-sm font-medium opacity-70 uppercase tracking-widest">Team {teamName}</p>
         <p className="text-4xl font-bold">{room?.players.find((p) => p.id === me?.playerId)?.name ?? "…"}</p>
-        <p className="text-sm opacity-60 mt-4">Waiting for the host to kick off…</p>
+
+        {matchStatus?.phase === "FULL_TIME" ? (
+          <div className="mt-6 flex flex-col items-center gap-2">
+            <p className="text-xs opacity-60 uppercase tracking-widest">Full Time</p>
+            <p className="text-4xl font-bold font-mono">
+              <span style={{ color: "#ff6b6b" }}>{matchStatus.score.RED}</span>
+              <span className="text-white/40 mx-2">—</span>
+              <span style={{ color: "#74b9ff" }}>{matchStatus.score.BLUE}</span>
+            </p>
+            <p className="text-sm opacity-60 mt-2">Waiting for host to start next match…</p>
+          </div>
+        ) : (
+          <p className="text-sm opacity-60 mt-4">Waiting for the host to kick off…</p>
+        )}
       </div>
 
       {teammates.length > 0 && (
@@ -205,7 +225,7 @@ export default function PhoneController() {
 const STICK_RADIUS = 100; // base circle radius in px
 const THUMB_RADIUS = 40;  // thumb knob radius in px
 
-function Joystick({ me }: { me: Me }) {
+function Joystick({ me, matchStatus }: { me: Me; matchStatus: MatchStatus | null }) {
   const bg = TEAM_BG[me.team];
   const inputRef = useRef({ x: 0, y: 0, kick: false });
   const stickBaseRef = useRef<{ cx: number; cy: number } | null>(null);
@@ -295,10 +315,38 @@ function Joystick({ me }: { me: Me }) {
       className="fixed inset-0 flex select-none overflow-hidden"
       style={{ backgroundColor: bg, touchAction: "none" }}
     >
-      {/* Team label top-left */}
-      <div className="absolute top-4 left-4 opacity-60 text-sm font-bold uppercase tracking-widest">
-        {me.team === "RED" ? "Red" : "Blue"} #{me.number}
-      </div>
+      {/* HUD — score + timer */}
+      {matchStatus && (
+        <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-5 py-3 bg-black/40">
+          <span className="text-sm font-bold opacity-70 uppercase tracking-widest">
+            {me.team === "RED" ? "Red" : "Blue"} #{me.number}
+          </span>
+          <span className="text-xl font-bold font-mono">
+            <span style={{ color: "#ff6b6b" }}>{matchStatus.score.RED}</span>
+            <span className="text-white/50 mx-2">—</span>
+            <span style={{ color: "#74b9ff" }}>{matchStatus.score.BLUE}</span>
+          </span>
+          <span className="text-sm font-mono font-bold opacity-80">
+            {formatTime(matchStatus.timeLeftMs)}
+          </span>
+        </div>
+      )}
+
+      {/* GOAL flash */}
+      {matchStatus?.phase === "GOAL" && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <span className="text-5xl font-black tracking-widest drop-shadow-lg animate-pulse">
+            GOAL!
+          </span>
+        </div>
+      )}
+
+      {/* Team label (no HUD yet) */}
+      {!matchStatus && (
+        <div className="absolute top-4 left-4 opacity-60 text-sm font-bold uppercase tracking-widest">
+          {me.team === "RED" ? "Red" : "Blue"} #{me.number}
+        </div>
+      )}
 
       {/* Joystick zone — left side */}
       <div
@@ -341,6 +389,11 @@ function Joystick({ me }: { me: Me }) {
       </div>
     </div>
   );
+}
+
+function formatTime(ms: number): string {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 }
 
 function Screen({ bg, children }: { bg: string; children: React.ReactNode }) {
