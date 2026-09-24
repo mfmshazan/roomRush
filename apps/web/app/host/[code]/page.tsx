@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import QRCode from "react-qr-code";
 import { getSocket } from "../../../lib/socket";
@@ -9,6 +9,7 @@ import type { RoomState, LobbyPlayer, Team } from "@roomrush/shared";
 import { initMatch } from "../../../game/rules";
 import { startLoop } from "../../../game/loop";
 import { useKeyboardInput } from "../../../game/input";
+import type { PlayerInput } from "../../../game/input";
 import type { MatchState } from "../../../game/types";
 
 const TEAM_COLOUR = { RED: "#D7263D", BLUE: "#1B66D1" } as const;
@@ -24,7 +25,21 @@ export default function HostPage() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const matchStateRef = useRef<MatchState | null>(null);
-  const getInput = useKeyboardInput();
+  const getKeyboardInput = useKeyboardInput();
+  const phoneInputRef = useRef<Map<string, PlayerInput>>(new Map());
+  // Real player IDs for the two keyboard slots (set at match start)
+  const kbPlayerIdsRef = useRef<[string | null, string | null]>([null, null]);
+
+  // Merged input: phone inputs by real ID; keyboard remapped from kb0/kb1 to real IDs
+  const getInput = useCallback((): Map<string, PlayerInput> => {
+    const merged = new Map<string, PlayerInput>(phoneInputRef.current);
+    const kbMap = getKeyboardInput();
+    const kb0 = kbMap.get("kb0");
+    const kb1 = kbMap.get("kb1");
+    if (kb0 && kbPlayerIdsRef.current[0]) merged.set(kbPlayerIdsRef.current[0], kb0);
+    if (kb1 && kbPlayerIdsRef.current[1]) merged.set(kbPlayerIdsRef.current[1], kb1);
+    return merged;
+  }, [getKeyboardInput]);
 
   // ── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -32,9 +47,16 @@ export default function HostPage() {
     const socket = getSocket();
 
     socket.on(EV.ROOM_STATE, (state: RoomState) => setRoom(state));
+    socket.on(EV.PLAYER_INPUT, (data: { playerId: string } & PlayerInput) => {
+      const { playerId, ...inp } = data;
+      phoneInputRef.current.set(playerId, inp);
+    });
     socket.emit(EV.HOST_CREATE_ROOM, {}, () => {});
 
-    return () => { socket.off(EV.ROOM_STATE); };
+    return () => {
+      socket.off(EV.ROOM_STATE);
+      socket.off(EV.PLAYER_INPUT);
+    };
   }, [code]);
 
   // ── Game loop: start when phase flips to MATCH ────────────────────────────
@@ -46,9 +68,12 @@ export default function HostPage() {
     const now = performance.now();
     const state = initMatch(room.players, now);
 
-    // Assign kb0/kb1 to first two players so keyboard works in M2
-    if (state.players[0]) state.players[0].id = "kb0";
-    if (state.players[1]) state.players[1].id = "kb1";
+    // Record real player IDs so keyboard input remaps to them
+    kbPlayerIdsRef.current = [
+      state.players[0]?.id ?? null,
+      state.players[1]?.id ?? null,
+    ];
+    phoneInputRef.current.clear();
 
     matchStateRef.current = state;
 
