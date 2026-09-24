@@ -1,39 +1,74 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import QRCode from "react-qr-code";
 import { getSocket } from "../../../lib/socket";
 import { EV } from "@roomrush/shared";
 import type { RoomState, LobbyPlayer, Team } from "@roomrush/shared";
+import { initMatch } from "../../../game/rules";
+import { startLoop } from "../../../game/loop";
+import { useKeyboardInput } from "../../../game/input";
+import type { MatchState } from "../../../game/types";
 
 const TEAM_COLOUR = { RED: "#D7263D", BLUE: "#1B66D1" } as const;
+const MATCH_DURATION_MS = 3 * 60 * 1000;
 
-export default function HostLobby() {
+export default function HostPage() {
   const { code } = useParams<{ code: string }>();
   const [room, setRoom] = useState<RoomState | null>(null);
   const [durationSec, setDurationSec] = useState(180);
   const [goalsToWin, setGoalsToWin] = useState(3);
   const [joinUrl, setJoinUrl] = useState("");
+  const [finalState, setFinalState] = useState<MatchState | null>(null);
 
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const matchStateRef = useRef<MatchState | null>(null);
+  const getInput = useKeyboardInput();
+
+  // ── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
     setJoinUrl(`${window.location.origin}/play/${code}`);
     const socket = getSocket();
 
     socket.on(EV.ROOM_STATE, (state: RoomState) => setRoom(state));
-
-    // Request current state on mount (handles host page refresh).
-    socket.emit(EV.HOST_CREATE_ROOM, {}, (ack: { ok: boolean; code?: string }) => {
-      // If the room already exists the server won't create a duplicate —
-      // this ack fires but the real state comes via ROOM_STATE broadcasts.
-      // If the socket is fresh (e.g. after a refresh), we need to re-host.
-      // For now, a refresh loses the room; future M4 work handles host resume.
-      void ack;
-    });
+    socket.emit(EV.HOST_CREATE_ROOM, {}, () => {});
 
     return () => { socket.off(EV.ROOM_STATE); };
   }, [code]);
 
+  // ── Game loop: start when phase flips to MATCH ────────────────────────────
+  useEffect(() => {
+    if (room?.phase !== "MATCH") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const now = performance.now();
+    const state = initMatch(room.players, now);
+
+    // Assign kb0/kb1 to first two players so keyboard works in M2
+    if (state.players[0]) state.players[0].id = "kb0";
+    if (state.players[1]) state.players[1].id = "kb1";
+
+    matchStateRef.current = state;
+
+    const stop = startLoop(
+      canvas,
+      state,
+      getInput,
+      (finalS) => {
+        setFinalState({ ...finalS });
+        // Notify server match ended (stub — full relay in M3)
+        getSocket().emit(EV.HOST_PLAY_AGAIN, {});
+      },
+      durationSec * 1000,
+    );
+
+    return stop;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.phase]);
+
+  // ── Lobby actions ─────────────────────────────────────────────────────────
   function swapTeam(player: LobbyPlayer) {
     const newTeam: Team = player.team === "RED" ? "BLUE" : "RED";
     getSocket().emit(EV.HOST_SET_TEAM, { playerId: player.id, team: newTeam });
@@ -47,22 +82,52 @@ export default function HostLobby() {
     getSocket().emit(EV.HOST_START_MATCH, { durationSec, goalsToWin });
   }
 
+  // ── Full-time results overlay ──────────────────────────────────────────────
+  if (finalState) {
+    return (
+      <FullTimeScreen
+        state={finalState}
+        onPlayAgain={() => {
+          setFinalState(null);
+          getSocket().emit(EV.HOST_PLAY_AGAIN, {});
+        }}
+      />
+    );
+  }
+
+  // ── Match: full-screen canvas ─────────────────────────────────────────────
+  if (room?.phase === "MATCH") {
+    return (
+      <div className="w-screen h-screen bg-black overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full"
+        />
+        <div className="absolute bottom-3 right-3 text-xs text-white/30 pointer-events-none">
+          WASD + Space &nbsp;|&nbsp; Arrows + Enter
+        </div>
+      </div>
+    );
+  }
+
+  // ── Lobby ─────────────────────────────────────────────────────────────────
   const redPlayers = room?.players.filter((p) => p.team === "RED") ?? [];
   const bluePlayers = room?.players.filter((p) => p.team === "BLUE") ?? [];
   const totalPlayers = room?.players.length ?? 0;
 
   return (
     <div className="min-h-screen bg-[#0F1F2E] text-white flex flex-col">
-      {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
         <span className="text-gray-400 text-sm">
-          {room?.hostConnected === false ? "⚠️ Host disconnected" : `${totalPlayers} player${totalPlayers !== 1 ? "s" : ""} in lobby`}
+          {room?.hostConnected === false
+            ? "⚠️ Host disconnected"
+            : `${totalPlayers} player${totalPlayers !== 1 ? "s" : ""} in lobby`}
         </span>
         <span className="text-gray-400 text-sm">RoomRush</span>
       </div>
 
       <div className="flex flex-1 flex-col lg:flex-row gap-6 p-6">
-        {/* Left: code + QR */}
+        {/* Code + QR */}
         <div className="flex flex-col items-center gap-4 lg:w-72 shrink-0">
           <div className="text-center">
             <p className="text-gray-400 text-sm mb-1">Join at</p>
@@ -78,23 +143,13 @@ export default function HostLobby() {
           )}
         </div>
 
-        {/* Centre: team columns */}
+        {/* Teams */}
         <div className="flex flex-1 gap-4">
-          <TeamColumn
-            team="RED"
-            players={redPlayers}
-            onSwap={swapTeam}
-            onKick={kickPlayer}
-          />
-          <TeamColumn
-            team="BLUE"
-            players={bluePlayers}
-            onSwap={swapTeam}
-            onKick={kickPlayer}
-          />
+          <TeamColumn team="RED" players={redPlayers} onSwap={swapTeam} onKick={kickPlayer} />
+          <TeamColumn team="BLUE" players={bluePlayers} onSwap={swapTeam} onKick={kickPlayer} />
         </div>
 
-        {/* Right: settings + kick off */}
+        {/* Settings + kick off */}
         <div className="flex flex-col gap-4 lg:w-56 shrink-0">
           <div className="bg-white/5 rounded-2xl p-4 flex flex-col gap-3">
             <h2 className="font-bold text-sm text-gray-400 uppercase tracking-wider">Settings</h2>
@@ -138,11 +193,10 @@ export default function HostLobby() {
   );
 }
 
+// ── Team column (same as before) ─────────────────────────────────────────────
+
 function TeamColumn({
-  team,
-  players,
-  onSwap,
-  onKick,
+  team, players, onSwap, onKick,
 }: {
   team: Team;
   players: LobbyPlayer[];
@@ -150,15 +204,13 @@ function TeamColumn({
   onKick: (p: LobbyPlayer) => void;
 }) {
   const colour = TEAM_COLOUR[team];
-  const label = team === "RED" ? "Red" : "Blue";
-
   return (
     <div className="flex-1 flex flex-col gap-2">
       <h2
         className="text-center font-bold text-lg py-2 rounded-xl"
         style={{ backgroundColor: colour + "33", color: colour }}
       >
-        {label}
+        {team === "RED" ? "Red" : "Blue"}
       </h2>
       {players.length === 0 && (
         <p className="text-center text-gray-600 text-sm mt-4">No players yet</p>
@@ -176,25 +228,65 @@ function TeamColumn({
             {player.number}
           </span>
           <span className="flex-1 text-sm font-medium truncate">{player.name}</span>
-          {!player.connected && (
-            <span className="text-gray-500 text-xs">offline</span>
-          )}
-          <button
-            onClick={() => onSwap(player)}
-            title="Swap team"
-            className="text-gray-400 hover:text-white text-xs px-1"
-          >
-            ⇄
-          </button>
-          <button
-            onClick={() => onKick(player)}
-            title="Kick player"
-            className="text-gray-500 hover:text-red-400 text-xs px-1"
-          >
-            ✕
-          </button>
+          {!player.connected && <span className="text-gray-500 text-xs">offline</span>}
+          <button onClick={() => onSwap(player)} title="Swap team" className="text-gray-400 hover:text-white text-xs px-1">⇄</button>
+          <button onClick={() => onKick(player)} title="Kick player" className="text-gray-500 hover:text-red-400 text-xs px-1">✕</button>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Full-time screen ──────────────────────────────────────────────────────────
+
+function FullTimeScreen({
+  state,
+  onPlayAgain,
+}: {
+  state: MatchState;
+  onPlayAgain: () => void;
+}) {
+  const winner =
+    state.score.RED > state.score.BLUE ? "RED"
+    : state.score.BLUE > state.score.RED ? "BLUE"
+    : null;
+
+  return (
+    <div className="min-h-screen bg-[#0F1F2E] text-white flex flex-col items-center justify-center gap-8">
+      <h1 className="text-4xl font-bold">Full Time</h1>
+
+      <div className="flex items-center gap-6 text-6xl font-bold">
+        <span style={{ color: TEAM_COLOUR.RED }}>{state.score.RED}</span>
+        <span className="text-gray-500">—</span>
+        <span style={{ color: TEAM_COLOUR.BLUE }}>{state.score.BLUE}</span>
+      </div>
+
+      {winner && (
+        <p className="text-2xl" style={{ color: TEAM_COLOUR[winner] }}>
+          {winner} wins!
+        </p>
+      )}
+      {!winner && <p className="text-2xl text-gray-400">Draw!</p>}
+
+      {state.goals.length > 0 && (
+        <div className="flex flex-col gap-1 text-sm text-gray-300">
+          {state.goals.map((g, i) => (
+            <p key={i}>
+              <span style={{ color: TEAM_COLOUR[g.team] }}>
+                {g.scorerName ?? "Unknown"}
+              </span>
+              {g.ownGoal ? " (OG)" : ""}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <button
+        onClick={onPlayAgain}
+        className="px-8 py-4 rounded-2xl bg-green-600 hover:bg-green-500 text-white text-xl font-bold transition-colors"
+      >
+        Play again
+      </button>
     </div>
   );
 }
