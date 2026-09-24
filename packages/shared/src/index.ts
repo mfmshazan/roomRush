@@ -84,3 +84,9 @@ export const StartMatchSchema = z.object({
   durationSec: z.number().int().min(60).max(600),
   goalsToWin: z.number().int().min(1).max(10),
 });
+
+export const PlayerInputSchema = z.object({
+  x:    z.number().min(-1).max(1),
+  y:    z.number().min(-1).max(1),
+  kick: z.boolean(),
+});
