@@ -90,6 +90,14 @@ export function registerHostHandlers(
     if (typeof ack === "function") ack({ ok: true });
   });
 
+  // ── host:match_status ────────────────────────────────────────────────────
+  socket.on(EV.HOST_MATCH_STATUS, (payload) => {
+    const hostRoom = rooms.getRoomByHostSocket(socket.id);
+    if (!hostRoom) return;
+    // Relay raw payload to every player socket in the room (not back to host)
+    socket.to(hostRoom.code).emit(EV.MATCH_STATUS, payload);
+  });
+
   // ── host:play_again ──────────────────────────────────────────────────────
   socket.on(EV.HOST_PLAY_AGAIN, (_payload, ack) => {
     const hostRoom = rooms.getRoomByHostSocket(socket.id);
