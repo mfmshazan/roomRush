@@ -1,43 +1,60 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { getSocket } from "../lib/socket";
-import { PROTOCOL_VERSION } from "@roomrush/shared";
+import { EV } from "@roomrush/shared";
 
 export default function Home() {
-  const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const router = useRouter();
+  const [hosting, setHosting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  function hostGame() {
+    setHosting(true);
+    setError(null);
     const socket = getSocket();
 
-    const onConnect = () => setStatus("connected");
-    const onDisconnect = () => setStatus("disconnected");
+    socket.emit(EV.HOST_CREATE_ROOM, {}, (ack: { ok: boolean; code?: string; error?: string }) => {
+      if (ack.ok && ack.code) {
+        router.push(`/host/${ack.code}`);
+      } else {
+        setError("Could not create room. Is the server running?");
+        setHosting(false);
+      }
+    });
 
-    socket.on("connect", onConnect);
-    socket.on("disconnect", onDisconnect);
-
-    if (socket.connected) setStatus("connected");
-
-    return () => {
-      socket.off("connect", onConnect);
-      socket.off("disconnect", onDisconnect);
-    };
-  }, []);
-
-  const colours = {
-    connecting: "bg-yellow-500",
-    connected: "bg-green-500",
-    disconnected: "bg-red-500",
-  };
+    // If socket not yet connected, connect first then the ack will fire.
+    if (!socket.connected) socket.connect();
+  }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-      <h1 className="text-5xl font-bold tracking-tight">RoomRush</h1>
-      <div className="flex items-center gap-3">
-        <span className={`h-4 w-4 rounded-full ${colours[status]}`} />
-        <span className="text-xl capitalize">{status}</span>
+    <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+      <div className="text-center">
+        <h1 className="text-6xl font-bold tracking-tight mb-2">RoomRush</h1>
+        <p className="text-gray-400 text-lg">Party football in your browser</p>
       </div>
-      <p className="text-sm text-gray-500">Protocol v{PROTOCOL_VERSION}</p>
+
+      <div className="flex flex-col gap-4 w-full max-w-xs">
+        <button
+          onClick={hostGame}
+          disabled={hosting}
+          className="w-full py-4 rounded-2xl bg-green-600 hover:bg-green-500 active:bg-green-700 disabled:opacity-50 text-white text-xl font-bold transition-colors"
+        >
+          {hosting ? "Creating room…" : "Host a game"}
+        </button>
+
+        <button
+          onClick={() => router.push("/play")}
+          className="w-full py-4 rounded-2xl bg-gray-800 hover:bg-gray-700 active:bg-gray-900 text-white text-xl font-bold transition-colors"
+        >
+          Join a game
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-red-400 text-sm">{error}</p>
+      )}
     </main>
   );
 }
