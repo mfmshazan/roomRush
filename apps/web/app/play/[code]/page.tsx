@@ -30,8 +30,8 @@ export default function PhoneController() {
   // ── On mount: attempt to rejoin via stored token ─────────────────────────
   useEffect(() => {
     const socket = getSocket();
-    const storedToken = localStorage.getItem(`rr-token-${code}`);
-    const storedPlayerId = localStorage.getItem(`rr-playerId-${code}`);
+    const storedToken = sessionStorage.getItem(`rr-token-${code}`);
+    const storedPlayerId = sessionStorage.getItem(`rr-playerId-${code}`);
 
     socket.on(EV.ROOM_STATE, (state: RoomState) => {
       setRoom(state);
@@ -58,8 +58,8 @@ export default function PhoneController() {
             setPhase("lobby");
           } else {
             // Token stale — clear storage and show join form
-            localStorage.removeItem(`rr-token-${code}`);
-            localStorage.removeItem(`rr-playerId-${code}`);
+            sessionStorage.removeItem(`rr-token-${code}`);
+            sessionStorage.removeItem(`rr-playerId-${code}`);
             setPhase("join_form");
           }
         },
@@ -89,8 +89,8 @@ export default function PhoneController() {
       (ack: { ok: boolean; playerId?: string; token?: string; team?: Team; number?: number; error?: string }) => {
         setJoining(false);
         if (ack.ok && ack.playerId && ack.token && ack.team && ack.number != null) {
-          localStorage.setItem(`rr-token-${code}`, ack.token);
-          localStorage.setItem(`rr-playerId-${code}`, ack.playerId);
+          sessionStorage.setItem(`rr-token-${code}`, ack.token);
+          sessionStorage.setItem(`rr-playerId-${code}`, ack.playerId);
           setMe({ playerId: ack.playerId, token: ack.token, team: ack.team, number: ack.number });
           setPhase("lobby");
         } else {
