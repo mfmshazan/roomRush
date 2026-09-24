@@ -8,7 +8,7 @@ import type { RoomState, Team } from "@roomrush/shared";
 
 const TEAM_BG = { RED: "#D7263D", BLUE: "#1B66D1" } as const;
 
-type Phase = "loading" | "join_form" | "lobby" | "kicked" | "host_gone";
+type Phase = "loading" | "join_form" | "lobby" | "match" | "kicked" | "host_gone";
 
 interface Me {
   playerId: string;
@@ -35,10 +35,10 @@ export default function PhoneController() {
 
     socket.on(EV.ROOM_STATE, (state: RoomState) => {
       setRoom(state);
-      // Use functional form to avoid stale closure; never overwrite terminal states.
       setPhase((prev) => {
         if (prev === "kicked" || prev === "host_gone") return prev;
         if (!state.hostConnected) return "host_gone";
+        if (state.phase === "MATCH") return "match";
         if (prev !== "join_form") return "lobby";
         return prev;
       });
@@ -57,7 +57,6 @@ export default function PhoneController() {
             setMe({ playerId: ack.playerId, token: storedToken, team: ack.team, number: ack.number });
             setPhase("lobby");
           } else {
-            // Token stale — clear storage and show join form
             sessionStorage.removeItem(`rr-token-${code}`);
             sessionStorage.removeItem(`rr-playerId-${code}`);
             setPhase("join_form");
@@ -157,6 +156,10 @@ export default function PhoneController() {
     );
   }
 
+  if (phase === "match" && me) {
+    return <Joystick me={me} />;
+  }
+
   // ── Lobby view ────────────────────────────────────────────────────────────
   const bg = me ? TEAM_BG[me.team] : "#0F1F2E";
   const teamName = me?.team === "RED" ? "Red" : "Blue";
@@ -164,7 +167,6 @@ export default function PhoneController() {
 
   return (
     <Screen bg={bg}>
-      {/* Player number badge */}
       <div className="absolute top-6 right-6 w-16 h-16 rounded-full bg-black/30 flex items-center justify-center">
         <span className="text-3xl font-bold">{me?.number}</span>
       </div>
@@ -195,6 +197,149 @@ export default function PhoneController() {
         </div>
       )}
     </Screen>
+  );
+}
+
+// ── Joystick controller ───────────────────────────────────────────────────────
+
+const STICK_RADIUS = 100; // base circle radius in px
+const THUMB_RADIUS = 40;  // thumb knob radius in px
+
+function Joystick({ me }: { me: Me }) {
+  const bg = TEAM_BG[me.team];
+  const inputRef = useRef({ x: 0, y: 0, kick: false });
+  const stickBaseRef = useRef<{ cx: number; cy: number } | null>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const kickActiveRef = useRef(false);
+
+  // Send input to server at 30 Hz
+  useEffect(() => {
+    const socket = getSocket();
+    let lastKick = false;
+
+    const interval = setInterval(() => {
+      const { x, y, kick } = inputRef.current;
+      // Always send movement; send kick only on rising edge to avoid spam
+      if (x !== 0 || y !== 0 || kick !== lastKick) {
+        socket.emit(EV.PLAYER_INPUT, { x, y, kick });
+        lastKick = kick;
+      }
+    }, 33);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Joystick touch handlers ───────────────────────────────────────────────
+  function onStickStart(e: React.TouchEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    stickBaseRef.current = {
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+    };
+    updateThumb(touch.clientX, touch.clientY);
+  }
+
+  function onStickMove(e: React.TouchEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!stickBaseRef.current) return;
+    const touch = e.changedTouches[0];
+    updateThumb(touch.clientX, touch.clientY);
+  }
+
+  function onStickEnd(e: React.TouchEvent<HTMLDivElement>) {
+    e.preventDefault();
+    stickBaseRef.current = null;
+    inputRef.current.x = 0;
+    inputRef.current.y = 0;
+    if (thumbRef.current) {
+      thumbRef.current.style.transform = "translate(-50%, -50%)";
+    }
+    getSocket().emit(EV.PLAYER_INPUT, { x: 0, y: 0, kick: inputRef.current.kick });
+  }
+
+  function updateThumb(clientX: number, clientY: number) {
+    const base = stickBaseRef.current;
+    if (!base) return;
+    let dx = clientX - base.cx;
+    let dy = clientY - base.cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > STICK_RADIUS) {
+      dx = (dx / dist) * STICK_RADIUS;
+      dy = (dy / dist) * STICK_RADIUS;
+    }
+    inputRef.current.x = parseFloat((dx / STICK_RADIUS).toFixed(3));
+    inputRef.current.y = parseFloat((dy / STICK_RADIUS).toFixed(3));
+    if (thumbRef.current) {
+      thumbRef.current.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    }
+  }
+
+  // ── Kick touch handlers ───────────────────────────────────────────────────
+  function onKickStart(e: React.TouchEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    kickActiveRef.current = true;
+    inputRef.current.kick = true;
+    getSocket().emit(EV.PLAYER_INPUT, { ...inputRef.current, kick: true });
+  }
+
+  function onKickEnd(e: React.TouchEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    kickActiveRef.current = false;
+    inputRef.current.kick = false;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 flex select-none overflow-hidden"
+      style={{ backgroundColor: bg, touchAction: "none" }}
+    >
+      {/* Team label top-left */}
+      <div className="absolute top-4 left-4 opacity-60 text-sm font-bold uppercase tracking-widest">
+        {me.team === "RED" ? "Red" : "Blue"} #{me.number}
+      </div>
+
+      {/* Joystick zone — left side */}
+      <div
+        className="flex-1 flex items-center justify-center"
+        onTouchStart={onStickStart}
+        onTouchMove={onStickMove}
+        onTouchEnd={onStickEnd}
+        onTouchCancel={onStickEnd}
+      >
+        {/* Base ring */}
+        <div
+          className="relative rounded-full border-4 border-white/30"
+          style={{ width: STICK_RADIUS * 2, height: STICK_RADIUS * 2 }}
+        >
+          {/* Thumb knob */}
+          <div
+            ref={thumbRef}
+            className="absolute top-1/2 left-1/2 rounded-full bg-white/80"
+            style={{
+              width: THUMB_RADIUS * 2,
+              height: THUMB_RADIUS * 2,
+              transform: "translate(-50%, -50%)",
+              transition: "transform 0.05s ease-out",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Kick button — right side */}
+      <div className="flex items-center justify-center pr-10">
+        <button
+          onTouchStart={onKickStart}
+          onTouchEnd={onKickEnd}
+          onTouchCancel={onKickEnd}
+          className="w-28 h-28 rounded-full bg-white/20 border-4 border-white/50 text-white text-xl font-bold active:bg-white/40 active:scale-95 transition-all"
+          style={{ touchAction: "none" }}
+        >
+          KICK
+        </button>
+      </div>
+    </div>
   );
 }
 
